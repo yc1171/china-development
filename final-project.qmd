@@ -13,13 +13,6 @@ execute:
 
 This project will showcase the impact of China's role in the global arena, specifically in the Infrastructure development industry. We will explore several regions and countries that have benefited from this negotiations. This dataset is public and sources are several.
 
--   Read in the `Liquor_Licenses.geojson` file
--   Create a map where you use:
--   OpenStreetMap as the background tile
--   Circle marker to indicate each location of a license
--   Use the `clusterOptions = markerClusterOptions()` to cluster together locations of a high density of markers
--   Add a label to each point using the `TRADE_NAME` and `TYPE` columns
-
 ```{r}
 library(here)
 library(sf)
