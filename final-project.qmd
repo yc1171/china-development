@@ -14,6 +14,13 @@ execute:
 This project will showcase the impact of China's role in the global arena, specifically in the Infrastructure development industry. We will explore several regions and countries that have benefited from this negotiations. This dataset is public and sources are several.
 
 ```{r}
+install.packages("ggiraph")
+install.packages("ggplot2")
+install.packages("dplyr")
+install.packages("patchwork")
+```
+
+```{r}
 library(here)
 library(sf)
 library(leaflet)
@@ -24,6 +31,9 @@ library(dplyr)
 library(plotly)
 library(DT)
 library(tidyr)
+library(ggiraph)
+library(ggplot2)
+library(patchwork)
 ```
 
 ## 1. Data Importing
@@ -180,6 +190,24 @@ leaflet(data = combined_geojson) %>%
 
 ```
 
+### 2.2 Interactive Map (for test)
+
+```{r}
+# Create an interactive map
+map_plot <- ggplot(df_filtered, aes(
+  x = `Adjusted Amount (Constant USD 2021)`,
+  y = `Recipient Region`,
+  tooltip = Title,
+  data_id = `AidData Record ID`
+)) +
+  geom_point_interactive(size = 4, aes(color = `Recipient Region`)) +
+  theme_minimal() +
+  labs(title = "Geospatial Projects by Region", x = "Adjusted Amount (USD)", y = "Recipient Region")
+
+girafe(ggobj = map_plot)
+```
+
+
 ## 3. Creating plots with Shiny App
 
 ### 3.1 Test with a sample map (filter by Region)
@@ -241,7 +269,14 @@ server <- function(input, output, session) {
 shinyApp(ui = ui, server = server)
 ```
 
-### 3.2 Create the second map
+
+### 3.2 Create interactive map with connected barplots and piecharts
+
+Improvements made in this map include:
+1. Convert geographic data using st_centroid() for point representation
+2. Use colorFactor() with 'viridis' palette for consistent sector coloring
+3. Compute centroids outside reactive context for better performance
+4. Replaced polygon geometries with circle markers to solve visibility issues with small areas
 
 ```{r}
 library(shiny)
@@ -338,8 +373,8 @@ server <- function(input, output, session) {
     pal <- colorFactor("viridis", domain = unique(combined_geojson$Sector.Name))
     
     # Get centroids for points
-    centroids <- st_centroid(filtered_data())
-    coords <- st_coordinates(centroids)
+    centroids <- st_centroid(filtered_data()) # Convert polygons to points at their center
+    coords <- st_coordinates(centroids)      # Extract coordinates matrix
     
     # Create map
     leaflet() %>%
@@ -439,3 +474,233 @@ server <- function(input, output, session) {
 # Run app
 shinyApp(ui = ui, server = server)
 ```
+
+### 3.3 Adding Tabs for Analysis & Data Table
+
+- Using polygons instead of circled markers
+- Adding a tab for Analysis with barplots and pie charts (allowing filter selection)
+- Adding a tab for Data table (allowing filter selection)
+
+```{r}
+library(shiny)
+library(leaflet)
+library(sf)
+library(dplyr)
+library(plotly)
+library(DT)
+
+# UI
+ui <- fluidPage(
+  titlePanel("China Development Finance Projects"),
+  
+  sidebarLayout(
+    sidebarPanel(width = 3,
+      selectInput("region_filter",
+                 "Filter by Region:",
+                 choices = c("All", sort(unique(combined_geojson$`Recipient Region`)))),
+      
+      selectInput("sector_filter",
+                 "Filter by Sector:",
+                 choices = c("All", sort(unique(combined_geojson$Sector.Name)))),
+      
+      checkboxGroupInput("status_filter",
+                        "Project Status:",
+                        choices = sort(unique(combined_geojson$Status))),
+      
+      sliderInput("amount_filter",
+                 "Investment Amount (USD Millions):",
+                 min = 0,
+                 max = max(combined_geojson$Amount..Constant.USD.2021./1e6, na.rm = TRUE),
+                 value = c(0, max(combined_geojson$Amount..Constant.USD.2021./1e6, na.rm = TRUE)))
+    ),
+    
+    mainPanel(width = 9,
+      fluidRow(
+        column(4, 
+               div(class = "well well-sm",
+                   h4("Total Projects"),
+                   textOutput("total_projects"))),
+        column(4, 
+               div(class = "well well-sm",
+                   h4("Total Investment (USD Billions)"),
+                   textOutput("total_investment"))),
+        column(4, 
+               div(class = "well well-sm",
+                   h4("Average Project Size (USD Millions)"),
+                   textOutput("avg_project")))
+      ),
+      
+      tabsetPanel(
+        tabPanel("Map View",
+                leafletOutput("map", height = "600px")),
+        tabPanel("Analysis",
+                fluidRow(
+                  column(6, plotlyOutput("sector_plot")),
+                  column(6, plotlyOutput("status_plot"))
+                )),
+        tabPanel("Data Table",
+                DTOutput("project_table"))
+      )
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  
+  # Filtered data
+  filtered_data <- reactive({
+    data <- combined_geojson
+    
+    if (input$region_filter != "All") {
+      data <- data %>% 
+        filter(`Recipient Region` == input$region_filter)
+    }
+    if (input$sector_filter != "All") {
+      data <- data %>% 
+        filter(Sector.Name == input$sector_filter)
+    }
+    if (length(input$status_filter) > 0) {
+      data <- data %>% 
+        filter(Status %in% input$status_filter)
+    }
+    data <- data %>% 
+      filter(
+        Amount..Constant.USD.2021./1e6 >= input$amount_filter[1],
+        Amount..Constant.USD.2021./1e6 <= input$amount_filter[2]
+      )
+    
+    validate(
+      need(nrow(data) > 0, "No projects match the selected filters.")
+    )
+    
+    data
+  })
+  
+  # Map output
+  output$map <- renderLeaflet({
+    req(filtered_data())
+    
+    data <- filtered_data()
+    
+    # Create color palette based on Sector Name
+    pal <- colorFactor("viridis", domain = combined_geojson$Sector.Name)
+    
+    leaflet(data) %>%
+      addProviderTiles("CartoDB.Positron") %>%
+      addPolygons(
+        fillColor = ~pal(Sector.Name),
+        color = ~pal(Sector.Name), # Match border color to sector for better visual alignment
+        weight = 1,
+        opacity = 1,
+        fillOpacity = 0.7,
+        highlightOptions = highlightOptions(
+          weight = 2,
+          color = "#666",
+          bringToFront = TRUE
+        ),
+        popup = ~paste(
+          "<b>Title:</b>", Title, "<br>",
+          "<b>Investment:</b> $", 
+          formatC(Amount..Constant.USD.2021./1e6, format = "f", digits = 2), "M<br>",
+          "<b>Status:</b>", Status, "<br>",
+          "<b>Sector:</b>", Sector.Name
+        )
+      ) %>%
+      addLegend(
+        position = "bottomright",
+        pal = pal,
+        values = ~Sector.Name,
+        title = "Sectors",
+        opacity = 0.7
+      )
+  })
+  
+  # Sector analysis plot
+  output$sector_plot <- renderPlotly({
+    sector_data <- filtered_data() %>%
+      st_drop_geometry() %>%
+      group_by(Sector.Name) %>%
+      summarise(Total = sum(Amount..Constant.USD.2021./1e6, na.rm = TRUE)) %>%
+      arrange(desc(Total))
+    
+    plot_ly(sector_data,
+            x = ~Total,
+            y = ~reorder(Sector.Name, Total),
+            type = "bar",
+            orientation = 'h',
+            marker = list(color = "#3498db")) %>%
+      layout(
+        title = list(
+          text = "Investment by Sector",
+          font = list(size = 14)
+        ),
+        xaxis = list(title = "USD Millions"),
+        yaxis = list(title = ""),
+        margin = list(l = 250),
+        showlegend = FALSE
+      )
+  })
+  
+  # Status analysis plot
+  output$status_plot <- renderPlotly({
+    status_data <- filtered_data() %>%
+      st_drop_geometry() %>%
+      group_by(Status) %>%
+      summarise(Count = n()) %>%
+      mutate(Percentage = Count / sum(Count) * 100)
+    
+    plot_ly(status_data,
+            labels = ~Status,
+            values = ~Count,
+            type = "pie",
+            marker = list(colors = c(
+              "Completion" = "#2ecc71",
+              "Implementation" = "#3498db",
+              "Pipeline: Commitment" = "#e74c3c"
+            ))) %>%
+      layout(
+        title = list(
+          text = "Project Status Distribution",
+          font = list(size = 14)
+        ),
+        showlegend = TRUE,
+        legend = list(orientation = "h", y = -0.2)
+      )
+  })
+  
+  # Data table
+  output$project_table <- renderDT({
+    filtered_data() %>%
+      st_drop_geometry() %>%
+      select(
+        `Title`, `Recipient Region`, `Sector.Name`, `Status`,
+        `Amount..Constant.USD.2021.`
+      ) %>%
+      datatable(
+        options = list(
+          pageLength = 10,
+          autoWidth = TRUE
+        ),
+        rownames = FALSE
+      )
+  })
+  
+  # Summary statistics
+  output$total_projects <- renderText({
+    nrow(filtered_data())
+  })
+  output$total_investment <- renderText({
+    total <- sum(filtered_data()$Amount..Constant.USD.2021., na.rm = TRUE) / 1e9
+    paste0("$", formatC(total, format = "f", digits = 1), "B")
+  })
+  output$avg_project <- renderText({
+    avg <- mean(filtered_data()$Amount..Constant.USD.2021., na.rm = TRUE) / 1e6
+    paste0("$", formatC(avg, format = "f", digits = 1), "M")
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
+```
+
