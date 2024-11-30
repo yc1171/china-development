@@ -19,7 +19,16 @@ library(sf)
 library(leaflet)
 library(tidyverse)
 library(readxl)
+library(shiny)
+library(dplyr)
+library(plotly)
+library(DT)
+library(tidyr)
 ```
+
+## 1. Data Importing
+
+### 1.1 Load and filter the original dataset
 
 ```{r}
 # importing data
@@ -30,20 +39,6 @@ df <- as.data.frame(df)
 #head(df)
 #str(df)
 #typeof(df)
-```
-
-```{r}
-#selecting specific column information
-df_filtered <- df %>% select("AidData Record ID", "Financier Country", "Recipient", 
-                    "Recipient Region", "Commitment Year", "Completion Year",
-                    "Title", "Description", "Status", "Intent", 
-                    "Flow Type Simplified", "Flow Class", "Sector Name",
-                    "Infrastructure", "Funding Agencies Type",
-                    "Implementing Agencies Type",
-                    "Adjusted Amount (Constant USD 2021)",
-                    "Location Narrative", "OECD ODA Income Group")
-
-
 ```
 
 ```{r}
@@ -71,27 +66,26 @@ df_filtered <- df_filtered %>%
 ```{r}
 #class(df_filtered)
 #colnames(df_filtered)
-#head(df_filtered)
+head(df_filtered)
 ```
 
-```{r}
+### 1.2 Load and process the GeoJSON files
 
-# Directory containing the GeoJSON files
+#### loads individual GeoJSON files into a list
+
+```{r}
+# Get file paths
 geojson_dir <- "./data-spatial"
-
-# Get a list of GeoJSON file paths
 geojson_files <- list.files(path = geojson_dir, pattern = "\\.geojson$", full.names = TRUE)
-```
 
-```{r}
+# Read files into list
 geojson_list <- lapply(geojson_files, st_read, quiet = TRUE)
-
-# Name each element in the list with the corresponding file name (optional)
 names(geojson_list) <- basename(geojson_files)
 ```
 
-```{r}
+#### matches GeoJSON features with AidData records and adds properties
 
+```{r}
 # Iterate and add properties
 geojson_list <- lapply(geojson_list, function(geojson) {
   # Get the GeoJSON's unique identifier (assumes it's in a column `id`)
@@ -136,12 +130,39 @@ geojson_list <- lapply(geojson_list, function(geojson) {
 })
 ```
 
+#### Combining and Fixing Geometries:
+
 ```{r}
+combined_geojson <- do.call(rbind, geojson_list) %>%
+  st_make_valid() %>%
+  # Add coordinate check
+  {
+    invalid_geoms <- st_is_valid(., reason = TRUE)
+    print(paste("Invalid geometries found:", sum(invalid_geoms != "Valid Geometry")))
+    .
+  } %>%
+  # Remove any remaining invalid geometries
+  filter(st_is_valid(.)) %>%
+  # Ensure proper CRS
+  st_transform(4326)
 
+# Print summary for verification
+print(paste("Total features:", nrow(combined_geojson)))
+print(paste("Unique regions:", length(unique(combined_geojson$`Recipient Region`))))
+```
 
-# Combine all GeoJSON files into one sf object
-combined_geojson <- do.call(rbind, geojson_list)
+```{r}
+# Test plotting with basic leaflet to verify data
+leaflet(combined_geojson) %>%
+  addTiles() %>%
+  addPolygons()
+```
 
+## 2. Creating Interactive Maps
+
+### 2.1 Testing with a sample Leaflet Map (optional)
+
+```{r}
 # Create a leaflet map
 leaflet(data = combined_geojson) %>%
   addProviderTiles("OpenStreetMap") %>%
@@ -159,16 +180,11 @@ leaflet(data = combined_geojson) %>%
 
 ```
 
+## 3. Creating plots with Shiny App
+
+### 3.1 Test with a sample map (filter by Region)
+
 ```{r}
-
-library(shiny)
-library(leaflet)
-library(sf)
-library(dplyr)
-
-# Combine all GeoJSON files into one sf object
-# Ensure geojson_list is already loaded and contains valid sf objects
-combined_geojson <- do.call(rbind, geojson_list)
 
 # Define UI
 ui <- fluidPage(
@@ -225,166 +241,201 @@ server <- function(input, output, session) {
 shinyApp(ui = ui, server = server)
 ```
 
-```{r}
-```
-
-```{r}
-library(here)
-library(sf)
-library(leaflet)
-library(tidyverse)
-
-l <- sf::st_read(here("fall_2024/activities/Liquor_Licenses.geojson")) %>%
-      st_transform(crs = 4326)
-
-head(l)
-
-l$long <- st_coordinates(l)[, 1]
-
-l$lat <- st_coordinates(l)[, 2]
-
-leaflet() %>%
-    addProviderTiles("OpenStreetMap",
-                     group = "OpenStreetMap")  %>%
-    addCircleMarkers(data = 
-              l, lat = ~lat,
-               lng = ~long,
-               color = 'darkgreen', radius = 2,
-              clusterOptions = markerClusterOptions(),
-              label = sprintf("Trade name: %s<br>Type of location: %s",
-                               l$TRADE_NAME,
-                               l$TYPE) %>%
-                            lapply(htmltools::HTML))
-```
-
-# Activity 2: put that code in a Shiny app + add filtering option
-
--   Embed the above map in a Shiny app
--   Use the `selectInput` widget to allow users to filter the points by 1 or more types of establishments
--   When doing the filtering, create a `reactive` object on the server side that stores the filtered output
+### 3.2 Create the second map
 
 ```{r}
 library(shiny)
-library(tidyverse)
 library(leaflet)
-library(leaflet.extras)
-library(htmltools)
 library(sf)
-library(here)
+library(dplyr)
+library(plotly)
 
-l <- sf::st_read(here("fall_2024/activities/Liquor_Licenses.geojson")) %>%
-  st_transform(crs = 4326)
-l$long <- st_coordinates(l)[, 1]
-
-l$lat <- st_coordinates(l)[, 2]
-
-
+# UI
 ui <- fluidPage(
-  # Application title
-  titlePanel("Map of Liquor Licenses in DC"),
+  titlePanel("China Development Finance Projects"),
+  
   sidebarLayout(
-    sidebarPanel(
-      selectInput(inputId= "input_type",
-                  label = "Type of establishment:",
-                  choices = sort(unique(l$TYPE)),
-                  selected = "Tavern",
-                  multiple = TRUE)
-    ),
-    mainPanel(
-      # Leaflet output
-      leafletOutput("map")
-    )
-  )
-  
-)
-
-# Define server logic required to draw a histogram
-server <- function(input, output) {
-  
-  d <- reactive({
-    l %>%
-      filter(TYPE %in% input$input_type)
+    sidebarPanel(width = 3,
+      selectInput("region_filter",
+                 "Filter by Region:",
+                 choices = c("All", sort(unique(combined_geojson$`Recipient Region`)))),
+      
+      selectInput("sector_filter",
+                 "Filter by Sector:",
+                 choices = c("All", sort(unique(combined_geojson$Sector.Name)))),
+      
+      checkboxGroupInput("status_filter",
+                        "Project Status:",
+                        choices = sort(unique(combined_geojson$Status))),
+      
+      sliderInput("amount_filter",
+                 "Investment Amount (USD Millions):",
+                 min = 0,
+                 max = max(combined_geojson$Amount..Constant.USD.2021./1e6, na.rm = TRUE),
+                 value = c(0, max(combined_geojson$Amount..Constant.USD.2021./1e6, na.rm = TRUE)))
+    ), # Convert amounts to millions for easier display
     
-  })
-  
-  output$map <- renderLeaflet({
-    leaflet() %>%
-      addProviderTiles("OpenStreetMap",
-                       group = "OpenStreetMap")  %>%
-      addCircleMarkers(data = 
-                         d(), lat = ~lat,
-                       lng = ~long,
-                       color = 'darkgreen', radius = 2,
-                       clusterOptions = markerClusterOptions(),
-                       label = sprintf("Trade name: %s<br>Type of location: %s",
-                                       d()$TRADE_NAME,
-                                       d()$TYPE) %>%
-                         lapply(htmltools::HTML))
-  })
-  
-}
-
-# Run the application 
-shinyApp(ui = ui, server = server)
-```
-
-# Activity 3: modify the Shiny app to have one tab with the map, another with data to download
-
-Create a two-tab app:
-
--   The first tab should contain the map
--   The second tab should contain a button to download a csv file reflecting the selected establishment types
-
-```{r}
-
-ui <- fluidPage(
-  # Application title
-  titlePanel("Map of Liquor Licenses in DC"),
-  sidebarLayout(
-    sidebarPanel(
-      selectInput(inputId= "input_type",
-                  label = "Type of establishment:",
-                  choices = sort(unique(l$TYPE)),
-                  selected = "Tavern",
-                  multiple = TRUE)
-    ),
-    mainPanel(
-      tabsetPanel(
-        tabPanel("Map of locations", leafletOutput("map")),
-        tabPanel("Download Locations", 
-                 downloadButton("csv_download", "Download the locations"))
+    mainPanel(width = 9,
+      fluidRow(
+        column(4, 
+               div(class = "well well-sm",
+                   h4("Total Projects"),
+                   textOutput("total_projects"))),
+        column(4, 
+               div(class = "well well-sm",
+                   h4("Total Investment (USD Billions)"),
+                   textOutput("total_investment")))
+      ),
+      
+      fluidRow(
+        column(8, leafletOutput("map", height = "600px")),
+        column(4,
+               div(style = "height: 300px;",
+                   plotlyOutput("sector_plot")),
+               div(style = "height: 300px;",
+                   plotlyOutput("status_plot")))
       )
     )
   )
-  
 )
 
-# Define server logic required to draw a histogram
-server <- function(input, output) {
+# Server
+server <- function(input, output, session) {
   
-  d <- reactive({
-    l %>%
-      filter(TYPE %in% input$input_type)
+  # Filtered data
+  filtered_data <- reactive({
+    data <- combined_geojson
     
+    if (!is.null(input$region_filter) && input$region_filter != "All") {
+      data <- data %>% 
+        filter(`Recipient Region` == input$region_filter)
+    }
+    
+    if (!is.null(input$sector_filter) && input$sector_filter != "All") {
+      data <- data %>% 
+        filter(Sector.Name == input$sector_filter)
+    }
+    
+    if (length(input$status_filter) > 0) {
+      data <- data %>% 
+        filter(Status %in% input$status_filter)
+    }
+    
+    amount_mil <- input$amount_filter
+    data <- data %>% 
+      filter(Amount..Constant.USD.2021./1e6 >= amount_mil[1],
+             Amount..Constant.USD.2021./1e6 <= amount_mil[2])
+    
+    data
   })
   
+  # Map
   output$map <- renderLeaflet({
+    req(filtered_data())
+    req(nrow(filtered_data()) > 0)
+    
+    # Create color palette
+    pal <- colorFactor("viridis", domain = unique(combined_geojson$Sector.Name))
+    
+    # Get centroids for points
+    centroids <- st_centroid(filtered_data())
+    coords <- st_coordinates(centroids)
+    
+    # Create map
     leaflet() %>%
-      addProviderTiles("OpenStreetMap",
-                       group = "OpenStreetMap")  %>%
-      addCircleMarkers(data = 
-                         d(), lat = ~lat,
-                       lng = ~long,
-                       color = 'darkgreen', radius = 2,
-                       clusterOptions = markerClusterOptions(),
-                       label = sprintf("Trade name: %s<br>Type of location: %s",
-                                       d()$TRADE_NAME,
-                                       d()$TYPE) %>%
-                         lapply(htmltools::HTML))
+      addProviderTiles("CartoDB.Positron") %>%
+      addCircleMarkers(
+        data = filtered_data(),
+        lng = coords[,1],
+        lat = coords[,2],
+        radius = 8,           # Consistent size for visibility
+        color = ~pal(Sector.Name), 
+        fillOpacity = 0.7,     # Semi-transparent for overlapping points
+        stroke = TRUE,         # Border for better definition
+        weight = 1,            # Thin border for clean look
+        popup = ~paste(
+          "<div style='max-width: 300px;'>", # Fixed width for better readability
+          "<strong>Title:</strong>", Title, "<br>", # Hierarchical information display
+          "<strong>Amount:</strong> $", formatC(Amount..Constant.USD.2021./1e6, format="f", digits=1, big.mark=","), "M<br>",
+          "<strong>Status:</strong>", Status, "<br>",
+          "<strong>Sector:</strong>", Sector.Name,
+          "</div>"
+        ),
+        label = ~Title # Hover labels for quick identification
+      ) %>%
+      addLegend(
+        position = "bottomright",
+        pal = pal,
+        values = unique(filtered_data()$Sector.Name),
+        title = "Sectors",
+        opacity = 0.7
+      )
   })
   
+  # Sector plot
+  output$sector_plot <- renderPlotly({
+    sector_data <- filtered_data() %>%
+      st_drop_geometry() %>%
+      group_by(Sector.Name) %>%
+      summarise(Total = sum(Amount..Constant.USD.2021./1e6, na.rm = TRUE)) %>%
+      arrange(desc(Total))
+    
+    plot_ly(sector_data,
+            x = ~Total,
+            y = ~reorder(Sector.Name, Total),
+            type = "bar",
+            orientation = 'h',
+            marker = list(color = "#3498db")) %>%
+      layout(
+        title = list(
+          text = "Investment by Sector",
+          font = list(size = 14)
+        ),
+        xaxis = list(title = "USD Millions"),
+        yaxis = list(title = ""),
+        margin = list(l = 250),
+        showlegend = FALSE
+      )
+  })
+  
+  # Status plot
+  output$status_plot <- renderPlotly({
+    status_data <- filtered_data() %>%
+      st_drop_geometry() %>%
+      group_by(Status) %>%
+      summarise(Count = n()) %>%
+      mutate(Percentage = Count/sum(Count) * 100)
+    
+    plot_ly(status_data,
+            labels = ~Status,
+            values = ~Count,
+            type = "pie",
+            marker = list(colors = c(
+              "Completion" = "#2ecc71",
+              "Implementation" = "#3498db",
+              "Pipeline: Commitment" = "#e74c3c"
+            ))) %>%
+      layout(
+        title = list(
+          text = "Project Status Distribution",
+          font = list(size = 14)
+        ),
+        showlegend = TRUE,
+        legend = list(orientation = "h", y = -0.2)
+      )
+  })
+  
+  # Summary statistics
+  output$total_projects <- renderText({
+    nrow(filtered_data())
+  })
+  
+  output$total_investment <- renderText({
+    total <- sum(filtered_data()$Amount..Constant.USD.2021., na.rm = TRUE) / 1e9
+    paste0("$", formatC(total, format="f", digits=1, big.mark=","), "B")
+  })
 }
 
-# Run the application 
+# Run app
 shinyApp(ui = ui, server = server)
 ```
